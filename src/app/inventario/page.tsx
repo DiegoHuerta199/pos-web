@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { supabase } from '../../../lib/supabase';
-import { Package, Search, Tag, AlertCircle, ScanBarcode, X, CheckCircle2 } from 'lucide-react';
+import { supabase } from '../../../lib/supabase'; // Asegúrate de que esta ruta sea correcta
+import { Package, Tag, AlertCircle, ScanBarcode, X, CheckCircle2 } from 'lucide-react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
 export default function Inventario() {
@@ -11,62 +11,64 @@ export default function Inventario() {
   const [successMsg, setSuccessMsg] = useState("");
   const [isScanning, setIsScanning] = useState(false);
 
-  // Cargar productos al montar el componente
+  // Cargar productos al iniciar
   useEffect(() => {
     fetchProducts();
   }, []);
 
-  // --- LÓGICA DEL ESCÁNER DE CÓDIGO DE BARRAS ---
+  // --- LÓGICA DEL ESCÁNER (Corrección Cámara Trasera) ---
   useEffect(() => {
     let scanner: any;
     
     if (isScanning) {
-      // Configuración del escáner (cámara trasera por defecto en móviles)
-      scanner = new Html5QrcodeScanner(
-        "reader", 
-        { 
-          fps: 10, 
-          qrbox: { width: 250, height: 150 },
-          rememberLastUsedCamera: true
-        }, 
-        false
-      );
+      // Configuración del escáner
+      const config = { 
+        fps: 10, 
+        qrbox: { width: 250, height: 150 },
+        // 👇 ESTO FUERZA LA CÁMARA TRASERA 👇
+        videoConstraints: {
+          facingMode: "environment" 
+        }
+      };
+
+      scanner = new Html5QrcodeScanner("reader", config, false);
 
       scanner.render(
         async (decodedText: string) => {
-          // Cuando detecta un código exitosamente
-          scanner.clear(); // Detenemos la cámara temporalmente
+          // Éxito al leer
+          scanner.clear(); 
           setIsScanning(false);
           await handleBarcodeScanned(decodedText);
         }, 
-        (errorMessage: any) => {
-          // Ignoramos los errores continuos mientras busca el código
+        (error: any) => {
+          // Error de lectura continuo (ignorar)
         }
       );
     }
 
-    // Limpieza cuando se desmonta o se cierra el escáner
+    // Limpieza al desmontar
     return () => {
       if (scanner) {
-        scanner.clear().catch(console.error);
+        scanner.clear().catch((err: any) => console.error("Error al limpiar escáner", err));
       }
     };
   }, [isScanning]);
 
-  // --- FUNCIÓN AL ESCANEAR UN CÓDIGO ---
+  // --- PROCESAR EL CÓDIGO ESCANEADO ---
   const handleBarcodeScanned = async (skuScaneado: string) => {
     setErrorMsg("");
     setSuccessMsg("");
     setLoading(true);
 
     try {
-      // 1. Buscamos si el producto ya existe en nuestro estado local
+      // 1. Buscamos el producto en la lista local
       const productoExistente = items.find(item => item.sku === skuScaneado);
 
       if (productoExistente) {
-        // 2. Si existe, le sumamos 1 al stock en Supabase
+        // 2. Si existe, calculamos nuevo stock
         const nuevoStock = productoExistente.stock + 1;
         
+        // 3. Actualizamos en Supabase
         const { error } = await supabase
           .from('products')
           .update({ stock: nuevoStock })
@@ -74,28 +76,27 @@ export default function Inventario() {
 
         if (error) throw error;
 
-        // 3. Actualizamos el estado local para que se vea reflejado sin recargar la página
+        // 4. Actualizamos el estado local (para verlo al instante)
         setItems(prevItems => 
           prevItems.map(item => 
             item.id === productoExistente.id ? { ...item, stock: nuevoStock } : item
           )
         );
 
-        setSuccessMsg(`¡Stock actualizado! ${productoExistente.name} ahora tiene ${nuevoStock} unidades.`);
+        setSuccessMsg(`¡Éxito! Stock de "${productoExistente.name}" actualizado a ${nuevoStock}.`);
       } else {
-        // Si no existe, puedes redirigir a un formulario de "Crear Producto" 
-        // pasándole el SKU por la URL, o abrir un Modal. Por ahora mostramos un mensaje.
-        setErrorMsg(`Código no encontrado: ${skuScaneado}. Debes registrar este producto primero.`);
+        // Código no encontrado
+        setErrorMsg(`El código "${skuScaneado}" no está registrado en el sistema.`);
       }
     } catch (error: any) {
-      console.error('Error al actualizar inventario:', error);
-      setErrorMsg("Error al actualizar el stock en la base de datos.");
+      console.error('Error:', error);
+      setErrorMsg("Error al actualizar el inventario. Intenta de nuevo.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- FUNCIÓN PARA OBTENER PRODUCTOS ---
+  // --- CARGAR DATOS DE SUPABASE ---
   async function fetchProducts() {
     try {
       setLoading(true);
@@ -115,8 +116,9 @@ export default function Inventario() {
   }
 
   return (
-    <div className="p-4 max-w-7xl mx-auto">
-      {/* --- CABECERA --- */}
+    <div className="p-4 max-w-7xl mx-auto min-h-screen bg-gray-50/50">
+      
+      {/* HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <h2 className="text-2xl md:text-3xl font-bold flex items-center gap-2 text-gray-800">
           <Package className="text-blue-600"/> 
@@ -124,6 +126,7 @@ export default function Inventario() {
         </h2>
         
         <div className="flex items-center gap-3 w-full md:w-auto">
+          {/* Botón Escanear */}
           <button 
             onClick={() => setIsScanning(!isScanning)}
             className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold transition shadow-sm ${
@@ -133,82 +136,81 @@ export default function Inventario() {
             }`}
           >
             {isScanning ? <X size={20}/> : <ScanBarcode size={20}/>}
-            {isScanning ? 'Cancelar Escáner' : 'Escanear Código'}
+            {isScanning ? 'Cerrar Cámara' : 'Escanear'}
           </button>
           
-          <span className="bg-blue-100 text-blue-800 text-sm font-semibold px-3 py-1.5 rounded-lg border border-blue-400 whitespace-nowrap">
-            {items.length} Items
+          <span className="bg-white text-gray-600 text-sm font-semibold px-3 py-2 rounded-lg border border-gray-200 shadow-sm whitespace-nowrap">
+            Total: {items.length}
           </span>
         </div>
       </div>
 
-      {/* --- CONTENEDOR DEL ESCÁNER --- */}
+      {/* ZONA DE CÁMARA */}
       {isScanning && (
-        <div className="mb-6 bg-gray-900 rounded-xl overflow-hidden shadow-2xl border border-gray-800 animate-in fade-in slide-in-from-top-4">
-          {/* El div con id="reader" es donde html5-qrcode inyecta la cámara */}
-          <div id="reader" className="w-full max-w-md mx-auto bg-black"></div>
-          <p className="text-gray-300 text-center p-4 text-sm font-medium">
-            Apunta la cámara al código de barras o código QR del producto
+        <div className="mb-6 bg-black rounded-xl overflow-hidden shadow-2xl border-4 border-gray-800 animate-in fade-in zoom-in-95 duration-300">
+          <div id="reader" className="w-full max-w-md mx-auto"></div>
+          <p className="text-white/80 text-center p-3 text-sm font-medium bg-gray-900">
+            Enfoca el código de barras
           </p>
         </div>
       )}
 
-      {/* --- MENSAJES DE ALERTA --- */}
+      {/* MENSAJES DE ESTADO */}
       {errorMsg && (
-        <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded-r-lg shadow-sm">
-          <div className="flex">
-            <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0" />
-            <div className="ml-3">
-              <p className="text-sm font-medium text-red-800">{errorMsg}</p>
-            </div>
+        <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded-r-lg shadow-sm animate-in slide-in-from-top-2">
+          <div className="flex items-center">
+            <AlertCircle className="h-5 w-5 text-red-500 mr-3" />
+            <p className="text-sm font-medium text-red-800">{errorMsg}</p>
           </div>
         </div>
       )}
 
       {successMsg && (
-        <div className="bg-green-50 border-l-4 border-green-500 p-4 mb-6 rounded-r-lg shadow-sm">
-          <div className="flex">
-            <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0" />
-            <div className="ml-3">
-              <p className="text-sm font-medium text-green-800">{successMsg}</p>
-            </div>
+        <div className="bg-green-50 border-l-4 border-green-500 p-4 mb-6 rounded-r-lg shadow-sm animate-in slide-in-from-top-2">
+          <div className="flex items-center">
+            <CheckCircle2 className="h-5 w-5 text-green-500 mr-3" />
+            <p className="text-sm font-medium text-green-800">{successMsg}</p>
           </div>
         </div>
       )}
 
-      {/* --- LISTADO DE PRODUCTOS --- */}
-      {loading ? (
+      {/* LISTADO DE PRODUCTOS */}
+      {loading && !isScanning ? (
         <div className="flex justify-center items-center py-20">
           <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
         </div>
       ) : (
         <>
-          {/* VISTA MÓVIL (TARJETAS) */}
+          {/* MÓVIL: TARJETAS */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
             {items.map((item) => (
-              <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col gap-2">
+              <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col gap-3">
                 <div className="flex justify-between items-start">
                   <div>
-                    <h3 className="font-bold text-gray-900 text-lg">{item.name}</h3>
-                    <p className="text-xs text-gray-500 font-mono mt-1">SKU: {item.sku}</p>
+                    <h3 className="font-bold text-gray-900 text-lg leading-tight">{item.name}</h3>
+                    <p className="text-xs text-gray-500 font-mono mt-1 bg-gray-100 inline-block px-1 rounded">
+                      {item.sku}
+                    </p>
                   </div>
                   <span className="text-lg font-bold text-blue-600">${item.price}</span>
                 </div>
                 
-                <div className="flex flex-wrap gap-2 mt-2">
-                  <span className="px-2.5 py-1 bg-gray-100 text-gray-700 text-xs rounded-md flex items-center gap-1 font-medium">
+                <div className="flex items-center gap-2 text-xs text-gray-600">
+                  <span className="bg-gray-100 px-2 py-1 rounded flex items-center gap-1">
                     <Tag size={12}/> {item.category || 'General'}
                   </span>
                   {item.size && (
-                    <span className="px-2.5 py-1 bg-gray-50 text-gray-600 text-xs rounded-md border border-gray-200">
+                    <span className="border border-gray-200 px-2 py-1 rounded">
                       Talla: {item.size}
                     </span>
                   )}
                 </div>
 
-                <div className="mt-3 pt-3 border-t border-gray-100 flex justify-between items-center">
-                   <span className="text-sm text-gray-500">Stock disponible:</span>
-                   <span className={`px-3 py-1 text-sm rounded-full font-bold ${item.stock < 5 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                <div className="pt-3 border-t border-gray-100 flex justify-between items-center">
+                   <span className="text-sm text-gray-500">Stock:</span>
+                   <span className={`px-3 py-1 text-sm rounded-full font-bold shadow-sm ${
+                     item.stock < 5 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                   }`}>
                       {item.stock} un.
                    </span>
                 </div>
@@ -216,7 +218,7 @@ export default function Inventario() {
             ))}
           </div>
 
-          {/* VISTA ESCRITORIO (TABLA) */}
+          {/* ESCRITORIO: TABLA */}
           <div className="hidden md:block bg-white shadow-sm rounded-xl overflow-hidden border border-gray-200">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
@@ -233,18 +235,20 @@ export default function Inventario() {
                   <tr key={item.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4">
                       <div className="text-sm font-semibold text-gray-900">{item.name}</div>
-                      {item.size && <div className="text-xs text-gray-500 mt-1">Talla: {item.size}</div>}
+                      {item.size && <div className="text-xs text-gray-500 mt-0.5">Talla: {item.size}</div>}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 font-mono">
                       {item.sku}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="px-2.5 py-1 text-xs rounded-md bg-gray-100 text-gray-700 font-medium">
+                      <span className="px-2.5 py-1 text-xs rounded-md bg-gray-100 text-gray-700 font-medium border border-gray-200">
                           {item.category || 'N/A'}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2.5 py-1 text-xs rounded-full font-bold ${item.stock < 5 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                      <span className={`px-2.5 py-1 text-xs rounded-full font-bold ${
+                        item.stock < 5 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                      }`}>
                         {item.stock}
                       </span>
                     </td>
@@ -253,11 +257,10 @@ export default function Inventario() {
                     </td>
                   </tr>
                 ))}
-                
-                {items.length === 0 && !loading && (
+                {items.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-6 py-10 text-center text-gray-500">
-                      No hay productos en el inventario.
+                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                      No hay productos registrados.
                     </td>
                   </tr>
                 )}
