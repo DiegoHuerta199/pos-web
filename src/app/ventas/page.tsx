@@ -1,31 +1,46 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { supabase } from '../../../lib/supabase';
+import { useEffect, useState, useRef } from 'react';
+import { supabase } from '../../../lib/supabase'; // Ajusta la ruta si es necesario
 import { 
   Package, Tag, AlertCircle, ScanBarcode, X, CheckCircle2, 
-  PlusCircle, Search, ChevronLeft, ChevronRight, PenSquare
+  PlusCircle, Search, ChevronLeft, ChevronRight, Keyboard, Loader2
 } from 'lucide-react';
-// IMPORTANTE: Cambiamos Html5QrcodeScanner por Html5Qrcode
 import { Html5Qrcode } from 'html5-qrcode';
 
+// Categorías extraídas de tu base de datos
+const CATEGORIAS_BD = [
+  "Pantalones", "Camisas", "Zapatos", "Perfumes", "Accesorios", 
+  "Tenis", "Shorts", "Gorras", "Texanas", "Sombreros", "Cintos", "Playeras"
+];
+
 export default function Inventario() {
+  // Estados de datos
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Estados de feedback
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   
-  // Estados UI
-  const [isScanning, setIsScanning] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
+  // Estados de UI (Modales)
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [scannerStatus, setScannerStatus] = useState<'init' | 'scanning' | 'error'>('init');
   
+  // Estado del Formulario
   const [newProduct, setNewProduct] = useState({
-    sku: '', name: '', category: '', price: '', stock: 1, size: ''
+    sku: '', name: '', category: CATEGORIAS_BD[0], price: '', stock: 1, size: ''
   });
 
+  // Paginación y Búsqueda
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 10;
 
+  // Ref para manejar la instancia de la cámara y evitar memory leaks
+  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+
+  // 1. Cargar productos al montar
   useEffect(() => {
     fetchProducts();
   }, []);
@@ -34,59 +49,70 @@ export default function Inventario() {
     setCurrentPage(1);
   }, [searchTerm]);
 
-  // --- NUEVA LÓGICA DEL ESCÁNER (MODO INVISIBLE Y DIRECTO) ---
+  // 2. Lógica Aislada del Escáner (Manejo de Ciclo de Vida)
   useEffect(() => {
-    let html5QrCode: Html5Qrcode;
-    let isComponentMounted = true;
+    if (!isScannerOpen) return;
 
-    if (isScanning) {
-      // Usamos el modo Core de la librería para evitar su interfaz fea
-      html5QrCode = new Html5Qrcode("reader");
+    let isMounted = true;
+    setScannerStatus('init');
 
-      html5QrCode.start(
-        { facingMode: "environment" }, // Fuerza la cámara trasera
-        { fps: 15, qrbox: { width: 250, height: 150 } },
-        (decodedText) => {
-          // Éxito al escanear
-          if (isComponentMounted) {
-            // Detenemos la cámara INMEDIATAMENTE
-            html5QrCode.stop().then(() => {
-              setIsScanning(false);
+    const startScanner = async () => {
+      try {
+        html5QrCodeRef.current = new Html5Qrcode("reader");
+        await html5QrCodeRef.current.start(
+          { facingMode: "environment" }, // Forzar cámara trasera
+          { fps: 15, qrbox: { width: 250, height: 150 } },
+          async (decodedText) => {
+            if (isMounted) {
+              // DETENER CÁMARA INMEDIATAMENTE AL LEER
+              if (html5QrCodeRef.current?.isScanning) {
+                await html5QrCodeRef.current.stop();
+              }
+              if (navigator.vibrate) navigator.vibrate([200]); // Feedback físico
+              setIsScannerOpen(false);
               handleBarcodeScanned(decodedText);
-            }).catch(err => console.error("Error deteniendo cámara", err));
-          }
-        },
-        (errorMessage) => {
-          // Errores continuos de "no se detecta código" (se ignoran silenciosamente)
+            }
+          },
+          () => {} // Ignorar advertencias por frame vacío
+        );
+        if (isMounted) setScannerStatus('scanning');
+      } catch (err) {
+        console.error("Error cámara:", err);
+        if (isMounted) {
+          setScannerStatus('error');
+          setErrorMsg("No se pudo iniciar la cámara. Verifica los permisos.");
         }
-      ).catch((err) => {
-        console.error("Error iniciando escáner:", err);
-        setErrorMsg("Error al iniciar la cámara. Verifica los permisos de tu navegador.");
-        setIsScanning(false);
-      });
-    }
-
-    // Limpieza al cerrar el modal o cambiar de página
-    return () => {
-      isComponentMounted = false;
-      if (html5QrCode && html5QrCode.isScanning) {
-        html5QrCode.stop().catch(console.error);
       }
     };
-  }, [isScanning]);
 
-  // --- PROCESAMIENTO DEL SKU ---
+    // Pequeño delay para asegurar que el DOM pinto el div #reader
+    const timer = setTimeout(startScanner, 200);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+      if (html5QrCodeRef.current?.isScanning) {
+        html5QrCodeRef.current.stop().catch(console.error);
+      }
+    };
+  }, [isScannerOpen]);
+
+  const closeScanner = async () => {
+    if (html5QrCodeRef.current?.isScanning) {
+      await html5QrCodeRef.current.stop().catch(console.error);
+    }
+    setIsScannerOpen(false);
+  };
+
+  // 3. Procesamiento del Código Escaneado
   const handleBarcodeScanned = async (skuScaneado: string) => {
-    setErrorMsg("");
-    setSuccessMsg("");
-    setShowAddForm(false);
+    setErrorMsg(""); setSuccessMsg("");
     setLoading(true);
 
     try {
       const productoExistente = items.find(item => item.sku === skuScaneado);
 
       if (productoExistente) {
-        // SUMAR STOCK +1
         const nuevoStock = productoExistente.stock + 1;
         const { error } = await supabase
           .from('products')
@@ -95,36 +121,31 @@ export default function Inventario() {
 
         if (error) throw error;
 
-        setItems(prevItems => 
-          prevItems.map(item => 
-            item.id === productoExistente.id ? { ...item, stock: nuevoStock } : item
-          )
-        );
+        setItems(prev => prev.map(item => item.id === productoExistente.id ? { ...item, stock: nuevoStock } : item));
         setSearchTerm(skuScaneado);
-        setSuccessMsg(`Stock actualizado: ${productoExistente.name} (+1)`);
+        setSuccessMsg(`¡Stock sumado! ${productoExistente.name} ahora tiene ${nuevoStock} unidades.`);
       } else {
-        // PRODUCTO NUEVO
-        setNewProduct(prev => ({ ...prev, sku: skuScaneado }));
-        setShowAddForm(true);
-        setErrorMsg(`Código nuevo detectado: ${skuScaneado}. Regístralo a continuación.`);
+        // No existe: Abrir formulario prellenado
+        setNewProduct(prev => ({ ...prev, sku: skuScaneado, name: '', price: '', stock: 1, size: '' }));
+        setIsFormOpen(true);
+        setErrorMsg(`Código no encontrado (${skuScaneado}). Por favor, registra el producto nuevo.`);
       }
     } catch (error: any) {
-      setErrorMsg("Error al actualizar la base de datos. Intenta de nuevo.");
+      setErrorMsg("Error al actualizar la base de datos.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- GUARDADO MANUAL ---
-  const handleAddProduct = async (e: React.FormEvent) => {
+  // 4. Guardar Producto (Manual o Escaneado Nuevo)
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    setErrorMsg("");
+    setLoading(true); setErrorMsg(""); setSuccessMsg("");
     
     try {
       const existe = items.find(item => item.sku === newProduct.sku);
       if (existe) {
-        setErrorMsg(`El código ${newProduct.sku} ya existe en "${existe.name}". Búscalo para actualizar stock.`);
+        setErrorMsg(`El SKU ${newProduct.sku} ya pertenece a "${existe.name}".`);
         setLoading(false);
         return;
       }
@@ -146,11 +167,12 @@ export default function Inventario() {
 
       setItems(prev => [...prev, data]);
       setSearchTerm(data.sku); 
-      setSuccessMsg(`Producto guardado con éxito.`);
-      setShowAddForm(false);
-      setNewProduct({ sku: '', name: '', category: '', price: '', stock: 1, size: '' });
+      setSuccessMsg(`"${data.name}" registrado correctamente.`);
+      setIsFormOpen(false);
+      // Reset form
+      setNewProduct({ sku: '', name: '', category: CATEGORIAS_BD[0], price: '', stock: 1, size: '' });
     } catch (error: any) {
-      setErrorMsg("Error al guardar el producto.");
+      setErrorMsg("Error al guardar el producto en el servidor.");
     } finally {
       setLoading(false);
     }
@@ -159,24 +181,17 @@ export default function Inventario() {
   async function fetchProducts() {
     try {
       setLoading(true);
-      const { data, error } = await supabase.from('products').select('*').order('name');
+      const { data, error } = await supabase.from('products').select('*').order('updated_at', { ascending: false });
       if (error) throw error;
       setItems(data || []);
     } catch (error: any) {
-      setErrorMsg(error.message || "Error de conexión");
+      setErrorMsg("Error de conexión con la base de datos.");
     } finally {
       setLoading(false);
     }
   }
 
-  const openManualForm = () => {
-    setIsScanning(false);
-    setErrorMsg("");
-    setSuccessMsg("");
-    setNewProduct({ sku: '', name: '', category: '', price: '', stock: 1, size: '' });
-    setShowAddForm(true);
-  };
-
+  // Filtrado
   const filteredItems = items.filter(item => {
     const searchLower = searchTerm.toLowerCase();
     return (
@@ -187,260 +202,149 @@ export default function Inventario() {
   });
 
   const totalPages = Math.ceil(filteredItems.length / ITEMS_PER_PAGE) || 1;
-  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-  const currentItems = filteredItems.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  const currentItems = filteredItems.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto min-h-screen bg-slate-100 text-slate-900 font-sans">
       
-      {/* HEADER */}
+      {/* ESTILOS INYECTADOS PARA ANIMACIÓN DEL ESCÁNER */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @keyframes scan-laser {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(140px); }
+        }
+        .animate-laser { animation: scan-laser 2.5s ease-in-out infinite; }
+      `}} />
+
+      {/* HEADER EMPRESARIAL */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-        <h2 className="text-2xl md:text-3xl font-black flex items-center gap-2 text-slate-800">
-          <Package className="text-blue-600 h-8 w-8"/> 
-          Inventario
-        </h2>
+        <div>
+          <h2 className="text-2xl md:text-3xl font-black flex items-center gap-2 text-slate-800 leading-none">
+            <Package className="text-blue-600 h-8 w-8"/> Inventario
+          </h2>
+          <p className="text-sm text-slate-500 font-semibold mt-1 ml-10">Gestión de almacén</p>
+        </div>
         
         <div className="flex flex-col md:flex-row w-full md:w-auto gap-3">
           <button 
-            onClick={openManualForm}
-            className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-4 md:py-3 rounded-xl border-2 border-slate-800 bg-slate-800 text-white font-bold hover:bg-slate-700 shadow-md active:scale-95 transition"
+            onClick={() => {
+              setIsScannerOpen(false);
+              setNewProduct({ sku: '', name: '', category: CATEGORIAS_BD[0], price: '', stock: 1, size: '' });
+              setIsFormOpen(true);
+            }}
+            className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-4 md:py-3 rounded-xl border-2 border-slate-300 bg-white text-slate-800 font-bold hover:bg-slate-50 shadow-sm active:scale-95 transition"
           >
-            <PenSquare size={22}/>
-            Ingreso Manual
+            <Keyboard size={20}/> Ingreso Manual
           </button>
 
           <button 
             onClick={() => {
-              setIsScanning(true);
-              setShowAddForm(false);
+              setIsFormOpen(false);
+              setIsScannerOpen(true);
             }}
             className="w-full md:w-auto flex items-center justify-center gap-2 px-6 py-4 md:py-3 rounded-xl font-bold transition shadow-lg active:scale-95 bg-blue-600 text-white hover:bg-blue-700 border-2 border-blue-700"
           >
-            <ScanBarcode size={24}/>
-            Escanear Código
+            <ScanBarcode size={24}/> Escanear Producto
           </button>
         </div>
       </div>
 
-      {/* BARRA DE BÚSQUEDA */}
+      {/* BUSCADOR */}
       <div className="mb-6 relative shadow-sm rounded-xl">
         <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-          <Search className="h-6 w-6 text-slate-500" />
+          <Search className="h-6 w-6 text-slate-400" />
         </div>
         <input
           type="text"
-          placeholder="Buscar producto o SKU..."
+          placeholder="Buscar por nombre, SKU o categoría..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="block w-full pl-12 pr-12 py-4 border-2 border-slate-300 rounded-xl bg-white placeholder-slate-500 focus:outline-none focus:ring-0 focus:border-blue-600 text-lg font-medium text-slate-900 shadow-sm"
+          className="block w-full pl-12 pr-12 py-4 border-2 border-slate-300 rounded-xl bg-white focus:outline-none focus:ring-0 focus:border-blue-600 text-lg font-medium text-slate-900 shadow-sm"
         />
         {searchTerm && (
-          <button 
-            onClick={() => setSearchTerm("")}
-            className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-800"
-          >
+          <button onClick={() => setSearchTerm("")} className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-800">
             <X size={24} />
           </button>
         )}
       </div>
 
-      {/* ========================================== */}
-      {/* MODAL DEL ESCÁNER (DISEÑO PROFESIONAL)     */}
-      {/* ========================================== */}
-      {isScanning && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="bg-slate-900 rounded-3xl overflow-hidden w-full max-w-md shadow-2xl border border-slate-700">
-            {/* Cabecera del Modal */}
-            <div className="px-5 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
-              <div className="flex items-center gap-2 text-white">
-                <ScanBarcode className="text-blue-500" />
-                <h3 className="font-bold text-lg tracking-wide">Escanear Código</h3>
-              </div>
-              <button 
-                onClick={() => setIsScanning(false)}
-                className="bg-slate-800 p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-700 transition"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            
-            {/* Contenedor de la Cámara */}
-            <div className="relative bg-black w-full aspect-square">
-              {/* Aquí se inyecta el video, le quitamos cualquier estilo basura que traiga */}
-              <div id="reader" className="w-full h-full [&_video]:w-full [&_video]:h-full [&_video]:object-cover border-none"></div>
-              
-              {/* Overlay visual para guiar al usuario */}
-              <div className="absolute inset-0 pointer-events-none border-[40px] border-black/40">
-                <div className="w-full h-full border-2 border-blue-500 rounded-xl relative">
-                  <div className="absolute top-1/2 left-0 w-full h-0.5 bg-red-500/50 shadow-[0_0_10px_red] animate-pulse"></div>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-5 bg-slate-900 text-center">
-              <p className="text-slate-400 text-sm font-medium">Centra el código de barras en el recuadro para registrarlo automáticamente.</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MENSAJES DE ESTADO */}
+      {/* TOASTS DE FEEDBACK */}
       {errorMsg && (
-        <div className="bg-red-100 border-l-8 border-red-600 p-4 mb-6 rounded-r-xl shadow-md flex items-center animate-in slide-in-from-top-2">
-          <AlertCircle className="h-8 w-8 text-red-600 mr-3 shrink-0" />
-          <p className="text-lg font-bold text-red-900 leading-snug">{errorMsg}</p>
+        <div className="bg-red-50 border-l-8 border-red-600 p-4 mb-6 rounded-xl shadow-sm flex items-start animate-in slide-in-from-top-2">
+          <AlertCircle className="h-6 w-6 text-red-600 mr-3 shrink-0 mt-0.5" />
+          <p className="text-base font-bold text-red-900">{errorMsg}</p>
         </div>
       )}
 
       {successMsg && (
-        <div className="bg-green-100 border-l-8 border-green-600 p-4 mb-6 rounded-r-xl shadow-md flex items-center animate-in slide-in-from-top-2">
-          <CheckCircle2 className="h-8 w-8 text-green-600 mr-3 shrink-0" />
-          <p className="text-lg font-bold text-green-900 leading-snug">{successMsg}</p>
+        <div className="bg-green-50 border-l-8 border-green-600 p-4 mb-6 rounded-xl shadow-sm flex items-start animate-in slide-in-from-top-2">
+          <CheckCircle2 className="h-6 w-6 text-green-600 mr-3 shrink-0 mt-0.5" />
+          <p className="text-base font-bold text-green-900">{successMsg}</p>
         </div>
       )}
 
-      {/* FORMULARIO MANUAL O NUEVO PRODUCTO */}
-      {showAddForm && (
-        <div className="bg-white p-5 md:p-8 rounded-2xl shadow-lg border-2 border-slate-200 mb-8 animate-in slide-in-from-top-4">
-          <div className="flex items-center gap-3 mb-6 border-b-2 border-slate-100 pb-4">
-            <PlusCircle className="text-blue-600 h-8 w-8" />
-            <h3 className="text-2xl font-black text-slate-800">Datos del Producto</h3>
-          </div>
-          
-          <form onSubmit={handleAddProduct} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-black text-slate-700 mb-2 uppercase tracking-wide">Código (SKU)</label>
-              <input required type="text" value={newProduct.sku} onChange={e => setNewProduct({...newProduct, sku: e.target.value})} className="block w-full rounded-xl border-2 border-slate-300 bg-slate-50 p-4 focus:bg-white focus:border-blue-600 focus:ring-0 text-lg text-slate-900 font-mono font-bold transition" placeholder="Escribe o escanea..." />
-            </div>
-            <div>
-              <label className="block text-sm font-black text-slate-700 mb-2 uppercase tracking-wide">Nombre</label>
-              <input required type="text" value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="block w-full rounded-xl border-2 border-slate-300 p-4 focus:border-blue-600 focus:ring-0 text-lg text-slate-900 font-bold transition" placeholder="Ej: Playera Negra" />
-            </div>
-            <div>
-              <label className="block text-sm font-black text-slate-700 mb-2 uppercase tracking-wide">Categoría</label>
-              <input type="text" value={newProduct.category} onChange={e => setNewProduct({...newProduct, category: e.target.value})} className="block w-full rounded-xl border-2 border-slate-300 p-4 focus:border-blue-600 focus:ring-0 text-lg text-slate-900 font-bold transition" placeholder="Ej: Ropa" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-black text-slate-700 mb-2 uppercase tracking-wide">Talla</label>
-                <input type="text" value={newProduct.size} onChange={e => setNewProduct({...newProduct, size: e.target.value})} className="block w-full rounded-xl border-2 border-slate-300 p-4 focus:border-blue-600 focus:ring-0 text-lg text-slate-900 font-bold transition" placeholder="Ej: M" />
-              </div>
-              <div>
-                <label className="block text-sm font-black text-slate-700 mb-2 uppercase tracking-wide">Stock Inicial</label>
-                <input required type="number" min="1" value={newProduct.stock} onChange={e => setNewProduct({...newProduct, stock: parseInt(e.target.value)})} className="block w-full rounded-xl border-2 border-slate-300 p-4 focus:border-blue-600 focus:ring-0 text-lg text-slate-900 font-bold transition" />
-              </div>
-            </div>
-            <div className="md:col-span-2">
-              <label className="block text-sm font-black text-slate-700 mb-2 uppercase tracking-wide">Precio ($)</label>
-              <input required type="number" step="0.01" min="0" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: e.target.value})} className="block w-full rounded-xl border-2 border-slate-300 p-4 focus:border-blue-600 focus:ring-0 text-lg text-slate-900 font-bold transition" placeholder="0.00" />
-            </div>
-            
-            <div className="md:col-span-2 flex flex-col-reverse md:flex-row justify-end gap-4 mt-4 pt-6 border-t-2 border-slate-100">
-              <button type="button" onClick={() => setShowAddForm(false)} className="px-6 py-4 text-slate-800 bg-slate-200 hover:bg-slate-300 rounded-xl font-black transition w-full md:w-auto text-lg">
-                Cancelar
-              </button>
-              <button type="submit" className="px-8 py-4 bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-black shadow-lg transition w-full md:w-auto text-lg">
-                Guardar Producto
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* ESTADO DE CARGA */}
-      {loading && (
+      {/* VISTAS DE DATOS */}
+      {loading ? (
         <div className="flex justify-center items-center py-24">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600"></div>
+          <Loader2 className="h-12 w-12 text-blue-600 animate-spin" />
         </div>
-      )}
-
-      {/* LISTADO DE PRODUCTOS */}
-      {!loading && (
+      ) : (
         <>
-          {/* MÓVIL */}
-          <div className="flex flex-col gap-5 md:hidden">
+          {/* VISTA MÓVIL */}
+          <div className="flex flex-col gap-4 md:hidden">
             {currentItems.map((item) => (
-              <div key={item.id} className="bg-white p-6 rounded-2xl shadow-md border-2 border-slate-200 flex flex-col gap-4">
-                <div className="flex justify-between items-start gap-3">
-                  <h3 className="font-black text-slate-900 text-xl leading-tight flex-1">
-                    {item.name}
-                  </h3>
-                  <span className="text-2xl font-black text-emerald-600 tracking-tight shrink-0">
-                    ${item.price}
-                  </span>
+              <div key={item.id} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-3">
+                <div className="flex justify-between items-start gap-2">
+                  <h3 className="font-black text-slate-900 text-lg leading-tight flex-1 uppercase">{item.name}</h3>
+                  <span className="text-2xl font-black text-emerald-600">${item.price}</span>
                 </div>
-                
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-base text-slate-700 font-mono font-bold bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                <div className="flex flex-wrap gap-2 mt-1">
+                  <span className="text-sm text-slate-700 font-mono font-bold bg-slate-100 px-2 py-1 rounded border border-slate-200">
                     SKU: {item.sku}
-                  </p>
+                  </span>
                   {item.size && (
-                    <span className="text-base text-slate-700 font-bold border-2 border-slate-200 px-3 py-1.5 rounded-lg">
+                    <span className="text-sm text-slate-600 font-bold border border-slate-200 px-2 py-1 rounded">
                       Talla: {item.size}
                     </span>
                   )}
                 </div>
-
-                <div className="pt-4 mt-2 border-t-2 border-slate-100 flex justify-between items-center">
-                   <div className="flex items-center gap-2 text-slate-600 font-bold text-base">
-                     <Tag size={18}/> 
-                     <span className="truncate max-w-[120px]">{item.category || 'General'}</span>
+                <div className="pt-3 mt-1 border-t border-slate-100 flex justify-between items-center">
+                   <div className="flex items-center gap-1.5 text-slate-500 font-bold text-sm">
+                     <Tag size={16}/> {item.category || 'N/A'}
                    </div>
-                   
-                   <div className={`px-4 py-2 rounded-xl font-black text-base shadow-sm border-2 ${
-                     item.stock < 5 ? 'bg-red-50 text-red-700 border-red-300' : 'bg-green-50 text-green-700 border-green-300'
+                   <div className={`px-3 py-1.5 rounded-lg font-black text-sm shadow-sm border ${
+                     item.stock < 5 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'
                    }`}>
                       STOCK: {item.stock}
                    </div>
                 </div>
               </div>
             ))}
-            
             {currentItems.length === 0 && (
-              <div className="text-center py-12 bg-white rounded-2xl border-2 border-slate-200 shadow-sm">
-                <Package className="h-16 w-16 text-slate-300 mx-auto mb-4" />
-                <p className="text-slate-500 font-bold text-xl">No hay productos.</p>
-              </div>
+              <div className="text-center py-10 bg-white rounded-2xl border border-slate-200"><p className="text-slate-500 font-bold">Sin resultados.</p></div>
             )}
           </div>
 
-          {/* ESCRITORIO */}
-          <div className="hidden md:block bg-white shadow-md rounded-2xl overflow-hidden border-2 border-slate-200">
-            <table className="min-w-full divide-y-2 divide-slate-200">
-              <thead className="bg-slate-100">
+          {/* VISTA ESCRITORIO */}
+          <div className="hidden md:block bg-white shadow-sm rounded-2xl overflow-hidden border border-slate-200">
+            <table className="min-w-full divide-y divide-slate-200">
+              <thead className="bg-slate-50">
                 <tr>
-                  <th className="px-6 py-5 text-left text-sm font-black text-slate-600 uppercase tracking-widest">Producto</th>
-                  <th className="px-6 py-5 text-left text-sm font-black text-slate-600 uppercase tracking-widest">SKU</th>
-                  <th className="px-6 py-5 text-left text-sm font-black text-slate-600 uppercase tracking-widest">Categoría</th>
-                  <th className="px-6 py-5 text-left text-sm font-black text-slate-600 uppercase tracking-widest">Stock</th>
-                  <th className="px-6 py-5 text-right text-sm font-black text-slate-600 uppercase tracking-widest">Precio</th>
+                  <th className="px-6 py-4 text-left text-xs font-black text-slate-500 uppercase tracking-widest">Producto</th>
+                  <th className="px-6 py-4 text-left text-xs font-black text-slate-500 uppercase tracking-widest">SKU</th>
+                  <th className="px-6 py-4 text-left text-xs font-black text-slate-500 uppercase tracking-widest">Categoría</th>
+                  <th className="px-6 py-4 text-left text-xs font-black text-slate-500 uppercase tracking-widest">Stock</th>
+                  <th className="px-6 py-4 text-right text-xs font-black text-slate-500 uppercase tracking-widest">Precio</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-200">
+              <tbody className="bg-white divide-y divide-slate-100">
                 {currentItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-6 py-5">
-                      <div className="text-lg font-bold text-slate-900">{item.name}</div>
-                      {item.size && <div className="text-sm font-bold text-slate-500 mt-1">Talla: {item.size}</div>}
-                    </td>
-                    <td className="px-6 py-5 whitespace-nowrap text-base text-slate-700 font-mono font-bold">
-                      {item.sku}
-                    </td>
-                    <td className="px-6 py-5 whitespace-nowrap">
-                      <span className="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-800 font-bold border border-slate-300">
-                          {item.category || 'N/A'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-5 whitespace-nowrap">
-                      <span className={`px-4 py-2 text-sm rounded-xl font-black border-2 ${
-                        item.stock < 5 ? 'bg-red-50 text-red-700 border-red-300' : 'bg-green-50 text-green-700 border-green-300'
-                      }`}>
-                        {item.stock}
-                      </span>
-                    </td>
-                    <td className="px-6 py-5 whitespace-nowrap text-xl text-emerald-600 text-right font-black">
-                      ${item.price}
-                    </td>
+                  <tr key={item.id} className="hover:bg-slate-50">
+                    <td className="px-6 py-4"><div className="text-base font-bold text-slate-900 uppercase">{item.name}</div>{item.size && <div className="text-xs font-bold text-slate-500 mt-0.5">Talla: {item.size}</div>}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-700 font-mono font-bold">{item.sku}</td>
+                    <td className="px-6 py-4 whitespace-nowrap"><span className="px-2.5 py-1 text-xs rounded-md bg-slate-100 text-slate-700 font-bold border border-slate-200">{item.category}</span></td>
+                    <td className="px-6 py-4 whitespace-nowrap"><span className={`px-3 py-1 text-sm rounded-lg font-black border ${item.stock < 5 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'}`}>{item.stock}</span></td>
+                    <td className="px-6 py-4 whitespace-nowrap text-lg text-emerald-600 text-right font-black">${item.price}</td>
                   </tr>
                 ))}
               </tbody>
@@ -449,34 +353,136 @@ export default function Inventario() {
 
           {/* PAGINACIÓN */}
           {filteredItems.length > 0 && (
-            <div className="mt-8 flex flex-col md:flex-row items-center justify-between gap-6 border-t-2 border-slate-200 pt-8 pb-8">
-              <div className="text-base font-bold text-slate-600">
-                Mostrando <span className="font-black text-slate-900">{(currentPage - 1) * ITEMS_PER_PAGE + 1}</span> a <span className="font-black text-slate-900">{Math.min(currentPage * ITEMS_PER_PAGE, filteredItems.length)}</span> de <span className="font-black text-slate-900">{filteredItems.length}</span>
+            <div className="mt-6 flex flex-col md:flex-row items-center justify-between gap-4 border-t border-slate-200 pt-6">
+              <div className="text-sm font-bold text-slate-500">
+                Mostrando <span className="text-slate-900">{(currentPage - 1) * ITEMS_PER_PAGE + 1}</span> a <span className="text-slate-900">{Math.min(currentPage * ITEMS_PER_PAGE, filteredItems.length)}</span> de <span className="text-slate-900">{filteredItems.length}</span>
               </div>
-              
-              <div className="flex items-center gap-3 w-full md:w-auto">
-                <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
-                  className="flex-1 md:flex-none flex justify-center p-4 rounded-xl border-2 border-slate-300 bg-white text-slate-800 hover:bg-slate-100 disabled:opacity-50 font-black transition active:scale-95"
-                >
-                  <ChevronLeft size={24} />
-                </button>
-                <span className="text-base font-black text-slate-900 px-4 text-center whitespace-nowrap">
-                  Pág {currentPage} / {totalPages}
-                </span>
-                <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
-                  className="flex-1 md:flex-none flex justify-center p-4 rounded-xl border-2 border-slate-300 bg-white text-slate-800 hover:bg-slate-100 disabled:opacity-50 font-black transition active:scale-95"
-                >
-                  <ChevronRight size={24} />
-                </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 transition"><ChevronLeft size={20} /></button>
+                <span className="text-sm font-black text-slate-900 px-3">Pág {currentPage} / {totalPages}</span>
+                <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 transition"><ChevronRight size={20} /></button>
               </div>
             </div>
           )}
         </>
       )}
+
+      {/* ========================================== */}
+      {/* MODAL DEL ESCÁNER (OVERLAY)                */}
+      {/* ========================================== */}
+      {isScannerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-slate-900 rounded-3xl overflow-hidden w-full max-w-md shadow-2xl border border-slate-700 relative flex flex-col">
+            
+            {/* Header Modal */}
+            <div className="px-5 py-4 flex justify-between items-center bg-slate-800/50">
+              <div className="flex items-center gap-2 text-white">
+                <ScanBarcode className="text-blue-500 h-6 w-6" />
+                <h3 className="font-black text-lg">Escanear Código</h3>
+              </div>
+              <button onClick={closeScanner} className="p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-700 transition"><X size={24} /></button>
+            </div>
+            
+            {/* Área de Cámara */}
+            <div className="relative w-full aspect-square bg-black">
+              {scannerStatus === 'init' && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center z-10 text-white">
+                  <Loader2 className="h-10 w-10 text-blue-500 animate-spin mb-3" />
+                  <p className="font-medium">Iniciando cámara...</p>
+                </div>
+              )}
+              {scannerStatus === 'error' && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center z-10 text-red-500 p-6 text-center">
+                  <AlertCircle className="h-12 w-12 mb-3" />
+                  <p className="font-bold">{errorMsg}</p>
+                </div>
+              )}
+
+              {/* Contenedor inyectado por html5-qrcode */}
+              <div id="reader" className="w-full h-full [&_video]:w-full [&_video]:h-full [&_video]:object-cover border-none"></div>
+              
+              {/* UI Overlay del láser */}
+              {scannerStatus === 'scanning' && (
+                <div className="absolute inset-0 pointer-events-none border-[40px] border-slate-900/50 z-10">
+                  <div className="w-full h-full border-2 border-blue-500 relative overflow-hidden rounded">
+                    <div className="absolute top-0 left-0 w-full h-0.5 bg-red-500 shadow-[0_0_15px_red] animate-laser"></div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-4 bg-slate-900 text-center">
+              <p className="text-slate-400 text-sm font-medium">Apunta la cámara al código de barras.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL DE FORMULARIO MANUAL                 */}
+      {/* ========================================== */}
+      {isFormOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden my-auto">
+            
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <div className="flex items-center gap-3">
+                <PlusCircle className="text-blue-600 h-7 w-7" />
+                <h3 className="text-xl font-black text-slate-800 uppercase">Datos del Producto</h3>
+              </div>
+              <button onClick={() => setIsFormOpen(false)} className="text-slate-400 hover:text-slate-700 bg-white p-2 rounded-full shadow-sm"><X size={24} /></button>
+            </div>
+
+            <div className="p-6 md:p-8">
+              <form onSubmit={handleSaveProduct} className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="block text-xs font-black text-slate-500 mb-1.5 uppercase tracking-wider">Código (SKU)</label>
+                  <input required type="text" value={newProduct.sku} onChange={e => setNewProduct({...newProduct, sku: e.target.value})} className="w-full rounded-xl border-2 border-slate-200 p-3.5 focus:border-blue-600 focus:ring-0 text-base font-mono font-bold" placeholder="Escanea o escribe..." />
+                </div>
+                <div>
+                  <label className="block text-xs font-black text-slate-500 mb-1.5 uppercase tracking-wider">Nombre del Producto</label>
+                  <input required type="text" value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full rounded-xl border-2 border-slate-200 p-3.5 focus:border-blue-600 focus:ring-0 text-base font-bold uppercase" placeholder="Ej: GORRA NY NEGRA" />
+                </div>
+                
+                {/* SELECT DE CATEGORÍAS */}
+                <div>
+                  <label className="block text-xs font-black text-slate-500 mb-1.5 uppercase tracking-wider">Categoría</label>
+                  <select 
+                    value={newProduct.category} 
+                    onChange={e => setNewProduct({...newProduct, category: e.target.value})} 
+                    className="w-full rounded-xl border-2 border-slate-200 p-3.5 focus:border-blue-600 focus:ring-0 text-base font-bold bg-white"
+                  >
+                    {CATEGORIAS_BD.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-black text-slate-500 mb-1.5 uppercase tracking-wider">Talla</label>
+                    <input type="text" value={newProduct.size} onChange={e => setNewProduct({...newProduct, size: e.target.value})} className="w-full rounded-xl border-2 border-slate-200 p-3.5 focus:border-blue-600 focus:ring-0 text-base font-bold uppercase" placeholder="UNITALLA" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-black text-slate-500 mb-1.5 uppercase tracking-wider">Stock Inicial</label>
+                    <input required type="number" min="1" value={newProduct.stock} onChange={e => setNewProduct({...newProduct, stock: parseInt(e.target.value)})} className="w-full rounded-xl border-2 border-slate-200 p-3.5 focus:border-blue-600 focus:ring-0 text-base font-bold" />
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-black text-slate-500 mb-1.5 uppercase tracking-wider">Precio de Venta ($)</label>
+                  <input required type="number" step="0.01" min="0" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: e.target.value})} className="w-full rounded-xl border-2 border-slate-200 p-3.5 focus:border-blue-600 focus:ring-0 text-lg text-emerald-700 font-black" placeholder="0.00" />
+                </div>
+                
+                <div className="md:col-span-2 flex flex-col-reverse md:flex-row justify-end gap-3 mt-4 pt-6 border-t border-slate-100">
+                  <button type="button" onClick={() => setIsFormOpen(false)} className="px-6 py-4 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl font-black transition w-full md:w-auto">Cancelar</button>
+                  <button type="submit" className="px-8 py-4 bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-black shadow-md transition w-full md:w-auto">Guardar en Inventario</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
