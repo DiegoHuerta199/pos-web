@@ -42,12 +42,11 @@ export default function Inventario() {
     setCurrentPage(1);
   }, [searchTerm]);
 
-  // 2. LÓGICA DEL ESCÁNER (EL MOTOR ORIGINAL QUE SÍ FUNCIONABA)
+  // 2. LÓGICA DEL ESCÁNER (MOTOR ORIGINAL)
   useEffect(() => {
     let scanner: Html5QrcodeScanner | null = null;
     
     if (isScannerOpen) {
-      // Usamos el motor original con corrección anti-congelamiento
       const config = { 
         fps: 10, 
         qrbox: { width: 250, height: 150 },
@@ -59,11 +58,11 @@ export default function Inventario() {
       scanner.render(
         async (decodedText: string) => {
           if (scanner) {
-            scanner.pause(); // Pausar para evitar escaneos dobles
-            await scanner.clear(); // Limpiar de forma segura
+            scanner.pause(); 
+            await scanner.clear(); 
           }
-          if (navigator.vibrate) navigator.vibrate(200); // Vibrar si es celular
-          setIsScannerOpen(false); // Cerrar modal
+          if (navigator.vibrate) navigator.vibrate(200); 
+          setIsScannerOpen(false); 
           await handleBarcodeScanned(decodedText);
         }, 
         (error: any) => { /* Ignorar errores de lectura continua */ }
@@ -77,7 +76,7 @@ export default function Inventario() {
     };
   }, [isScannerOpen]);
 
-  // 3. Procesar SKU
+  // 3. Procesar SKU (Escáner)
   const handleBarcodeScanned = async (skuScaneado: string) => {
     setErrorMsg(""); setSuccessMsg("");
     setLoading(true);
@@ -111,10 +110,16 @@ export default function Inventario() {
     }
   };
 
-  // 4. Guardar Producto Formulario
+  // 4. Guardar Producto Formulario (CON PROTECCIÓN ANTI-DOBLE CLIC Y LOCAL_ID SECUENCIAL)
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true); setErrorMsg(""); setSuccessMsg("");
+    
+    // Protección anti-doble clic: Si ya está guardando, ignorar nuevos clics
+    if (loading) return; 
+
+    setLoading(true); 
+    setErrorMsg(""); 
+    setSuccessMsg("");
     
     try {
       const existe = items.find(item => item.sku === newProduct.sku);
@@ -124,9 +129,19 @@ export default function Inventario() {
         return;
       }
 
+      // --- CÁLCULO DE LOCAL_ID SECUENCIAL ---
+      // Buscamos el local_id más alto en los productos actuales
+      const maxLocalId = items.reduce((max, item) => {
+        const currentId = item.local_id ? Number(item.local_id) : 0;
+        return currentId > max ? currentId : max;
+      }, 0);
+      
+      const nextLocalId = maxLocalId + 1;
+
       const { data, error } = await supabase
         .from('products')
         .insert([{
+          local_id: nextLocalId, // Guardamos el número secuencial generado
           sku: newProduct.sku,
           name: newProduct.name,
           category: newProduct.category,
@@ -139,12 +154,14 @@ export default function Inventario() {
 
       if (error) throw error;
 
-      setItems(prev => [...prev, data]);
+      // Actualizamos la lista local inmediatamente
+      setItems(prev => [data, ...prev]); // Lo ponemos al principio de la lista
       setSearchTerm(data.sku); 
       setSuccessMsg(`"${data.name}" agregado con éxito.`);
       setIsFormOpen(false);
       setNewProduct({ sku: '', name: '', category: CATEGORIAS_BD[0], price: '', stock: 1, size: '' });
     } catch (error: any) {
+      console.error(error);
       setErrorMsg("Error al guardar el producto.");
     } finally {
       setLoading(false);
@@ -252,7 +269,7 @@ export default function Inventario() {
       )}
 
       {/* LISTA DE PRODUCTOS */}
-      {loading ? (
+      {loading && !isFormOpen && !isScannerOpen ? (
         <div className="flex justify-center items-center py-24">
           <Loader2 className="h-12 w-12 text-blue-600 animate-spin" />
         </div>
@@ -268,6 +285,7 @@ export default function Inventario() {
                 </div>
                 <div className="flex flex-wrap gap-2 mt-2">
                   <span className="text-sm text-slate-700 font-mono font-bold bg-slate-100 px-2 py-1 rounded">SKU: {item.sku}</span>
+                  {item.local_id && <span className="text-sm text-slate-600 font-bold border border-slate-200 px-2 py-1 rounded">ID: {item.local_id}</span>}
                   {item.size && <span className="text-sm text-slate-600 font-bold border border-slate-200 px-2 py-1 rounded">Talla: {item.size}</span>}
                 </div>
                 <div className="pt-3 mt-3 border-t border-slate-100 flex justify-between items-center">
@@ -295,7 +313,13 @@ export default function Inventario() {
               <tbody className="bg-white divide-y divide-slate-100">
                 {currentItems.map((item) => (
                   <tr key={item.id} className="hover:bg-slate-50">
-                    <td className="px-6 py-4"><div className="text-base font-bold text-slate-900 uppercase">{item.name}</div>{item.size && <div className="text-xs font-bold text-slate-500 mt-0.5">Talla: {item.size}</div>}</td>
+                    <td className="px-6 py-4">
+                      <div className="text-base font-bold text-slate-900 uppercase">{item.name}</div>
+                      <div className="flex gap-2 mt-0.5">
+                        {item.local_id && <span className="text-xs font-bold text-slate-400">ID: {item.local_id}</span>}
+                        {item.size && <span className="text-xs font-bold text-slate-500">Talla: {item.size}</span>}
+                      </div>
+                    </td>
                     <td className="px-6 py-4 text-sm text-slate-700 font-mono font-bold">{item.sku}</td>
                     <td className="px-6 py-4"><span className="px-2.5 py-1 text-xs rounded-md bg-slate-100 text-slate-700 font-bold border border-slate-200">{item.category}</span></td>
                     <td className="px-6 py-4"><span className={`px-3 py-1 text-sm rounded-lg font-black border ${item.stock < 5 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'}`}>{item.stock}</span></td>
@@ -327,23 +351,20 @@ export default function Inventario() {
       {/* ========================================================= */}
       {isScannerOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4">
-          <div className="bg-white rounded-3xl overflow-hidden w-full max-w-md shadow-2xl flex flex-col relative">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl flex flex-col relative overflow-hidden">
             
-            {/* Botón de cerrar por encima de todo */}
             <button 
               onClick={() => setIsScannerOpen(false)} 
-              className="absolute top-4 right-4 z-[200] bg-red-600 text-white p-2 rounded-full shadow-lg"
+              className="absolute top-3 right-3 z-[200] bg-red-600 text-white p-2 rounded-full shadow-lg"
             >
               <X size={24} />
             </button>
 
             <div className="p-4 bg-slate-900 text-white text-center border-b-4 border-blue-500">
-              <h3 className="font-black text-xl">Escaneando...</h3>
+              <h3 className="font-black text-xl pr-8">Escaneando código...</h3>
             </div>
             
-            {/* Aquí se inyecta el html5-qrcode-scanner original */}
             <div id="reader" className="w-full bg-black"></div>
-            
           </div>
         </div>
       )}
@@ -355,7 +376,7 @@ export default function Inventario() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl w-full max-w-xl shadow-2xl my-auto">
             
-            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+            <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-3xl">
               <h3 className="text-xl font-black text-slate-800 flex items-center gap-2"><PlusCircle className="text-blue-600" /> Registrar Producto</h3>
               <button onClick={() => setIsFormOpen(false)} className="text-slate-400 hover:text-slate-700 p-2"><X size={24} /></button>
             </div>
@@ -373,7 +394,6 @@ export default function Inventario() {
                   <input required type="text" value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full rounded-xl border-2 border-slate-200 p-4 focus:border-blue-600 focus:outline-none text-base font-bold uppercase" placeholder="Ej: GORRA NY NEGRA" />
                 </div>
                 
-                {/* SELECT DE CATEGORÍAS NATIVO PARA MÓVIL */}
                 <div className="md:col-span-2">
                   <label className="block text-xs font-black text-slate-500 mb-2 uppercase">Categoría</label>
                   <div className="relative">
@@ -410,7 +430,18 @@ export default function Inventario() {
               
               <div className="flex flex-col md:flex-row justify-end gap-3 mt-6 pt-6 border-t border-slate-100">
                 <button type="button" onClick={() => setIsFormOpen(false)} className="px-6 py-4 bg-slate-200 text-slate-800 hover:bg-slate-300 rounded-xl font-black w-full md:w-auto transition">Cancelar</button>
-                <button type="submit" className="px-8 py-4 bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-black w-full md:w-auto shadow-md transition">Guardar Producto</button>
+                
+                {/* BOTÓN CON PROTECCIÓN VISUAL ANTI DOBLE CLIC */}
+                <button 
+                  type="submit" 
+                  disabled={loading}
+                  className={`px-8 py-4 text-white rounded-xl font-black w-full md:w-auto shadow-md transition flex justify-center items-center gap-2 ${
+                    loading ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                >
+                  {loading && <Loader2 className="animate-spin h-5 w-5" />}
+                  {loading ? 'Guardando...' : 'Guardar Producto'}
+                </button>
               </div>
             </form>
           </div>
